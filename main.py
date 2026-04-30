@@ -156,7 +156,7 @@ def fetch_page(date, start):
     params = {
         "widget": 565,
         "start": start,
-        "count": 20,
+        "count": 250,
         "archive_time": date
     }
 
