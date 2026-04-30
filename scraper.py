@@ -28,29 +28,72 @@ CONFIG = {
 }
 # ==========================================
 
-BASE_URL = "https://www.ittefaq.com.bd/api/theme_engine/get_ajax_contents"
+BASE_URL  = "https://www.ittefaq.com.bd/api/theme_engine/get_ajax_contents"
+HOME_URL  = "https://www.ittefaq.com.bd/"          # needed for cookie warm-up
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR  = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 FAILED_FILE = os.path.join(DATA_DIR, "failed_urls.txt")
+PRIMARY_DB  = os.path.join(DATA_DIR, "ittefaq.db")
 
-# Primary DB — splits become ittefaq_2.db, ittefaq_3.db, ...
-PRIMARY_DB = os.path.join(DATA_DIR, "ittefaq.db")
+# ── Headers that pass Cloudflare's browser check ──────────────────────────────
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":           "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language":  "bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding":  "gzip, deflate, br",
+    "Referer":          HOME_URL,
+    "X-Requested-With": "XMLHttpRequest",
+    "Connection":       "keep-alive",
+    "Sec-Fetch-Dest":   "empty",
+    "Sec-Fetch-Mode":   "cors",
+    "Sec-Fetch-Site":   "same-origin",
+}
+
+# ─────────────────────────── SESSION (shared) ───────────────────────────────
+
+def make_session() -> requests.Session:
+    """
+    Return a requests.Session pre-warmed with a homepage visit.
+    The homepage sets cookies (e.g. Cloudflare __cf_bm) that the API
+    endpoint requires; without them the server returns 403.
+    """
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    try:
+        # Visit the homepage to collect cookies
+        s.get(HOME_URL, timeout=15)
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"  ⚠  Homepage warm-up failed: {e} — continuing anyway")
+    return s
+
+# One shared session for normal / threadpool modes
+_SESSION: requests.Session | None = None
+
+def get_session() -> requests.Session:
+    global _SESSION
+    if _SESSION is None:
+        print("  🔗 Warming up session (homepage visit) …")
+        _SESSION = make_session()
+    return _SESSION
 
 
 # ─────────────────────────── DB ────────────────────────────
 
 def get_db_path(index: int) -> str:
-    """index=1 → ittefaq.db   index=2 → ittefaq_2.db   ..."""
     if index == 1:
         return PRIMARY_DB
     return os.path.join(DATA_DIR, f"ittefaq_{index}.db")
 
 
 def get_current_db() -> tuple[str, int]:
-    """Return (path, index) of the DB file that still has room."""
     i = 1
     while True:
         path = get_db_path(i)
@@ -161,26 +204,37 @@ def _params(date: str, start: int) -> dict:
 
 
 def fetch_page(date: str, start: int) -> str:
-    for _ in range(CONFIG["retries"]):
+    session = get_session()
+    for attempt in range(CONFIG["retries"]):
         try:
-            r = requests.get(BASE_URL, params=_params(date, start), timeout=10)
+            r = session.get(BASE_URL, params=_params(date, start), timeout=15)
+            if r.status_code == 403:
+                # Cloudflare challenge — back off and retry with a fresh session
+                print(f"  ⚠  403 on {date} start={start} (attempt {attempt+1}) — refreshing session")
+                global _SESSION
+                _SESSION = make_session()
+                time.sleep(2 ** attempt)
+                continue
             r.raise_for_status()
             return r.json().get("html", "")
-        except Exception:
-            time.sleep(1)
+        except Exception as e:
+            time.sleep(2 ** attempt)
     with open(FAILED_FILE, "a") as f:
         f.write(f"{date} start={start}\n")
     return ""
 
 
 async def fetch_page_async(session: aiohttp.ClientSession, date: str, start: int) -> str:
-    for _ in range(CONFIG["retries"]):
+    for attempt in range(CONFIG["retries"]):
         try:
             async with session.get(BASE_URL, params=_params(date, start)) as r:
-                data = await r.json()
+                if r.status == 403:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                data = await r.json(content_type=None)
                 return data.get("html", "")
         except Exception:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
     with open(FAILED_FILE, "a") as f:
         f.write(f"{date} start={start}\n")
     return ""
@@ -216,6 +270,8 @@ def scrape_date(date: str) -> tuple[str, list]:
 # ─────────────────────────── MODES ─────────────────────────
 
 def run_threadpool(dates: list[str]) -> list:
+    # Warm up once before spawning threads so all threads share the cookie jar
+    get_session()
     results = []
     with ThreadPoolExecutor(max_workers=CONFIG["max_workers"]) as exe:
         futures = {exe.submit(scrape_date, d): d for d in dates}
@@ -225,12 +281,28 @@ def run_threadpool(dates: list[str]) -> list:
 
 
 def run_normal(dates: list[str]) -> list:
+    get_session()   # warm up once
     return [scrape_date(d) for d in tqdm(dates, desc="Scraping")]
 
 
 async def _run_async(dates: list[str]) -> list:
-    results = []
-    async with aiohttp.ClientSession() as session:
+    # aiohttp connector with browser headers + cookie jar
+    connector = aiohttp.TCPConnector(ssl=True)
+    jar       = aiohttp.CookieJar()
+    async with aiohttp.ClientSession(
+        headers=HEADERS,
+        cookie_jar=jar,
+        connector=connector,
+    ) as session:
+        # Homepage warm-up to collect cookies
+        try:
+            async with session.get(HOME_URL, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                await r.read()
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"  ⚠  Async homepage warm-up failed: {e}")
+
+        results = []
         for date in tqdm(dates, desc="Scraping"):
             all_records, start = [], 0
             while True:
@@ -265,7 +337,6 @@ def persist_results(results: list) -> None:
 
         save_batch(records, conn)
 
-        # Auto-split when current DB hits the size limit
         size_mb = os.path.getsize(db_path) / (1024 * 1024)
         if size_mb >= CONFIG["max_db_size_mb"]:
             conn.close()
