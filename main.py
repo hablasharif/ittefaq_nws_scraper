@@ -13,29 +13,28 @@ from tqdm import tqdm
 CONFIG = {
     "mode": "threadpool",  # threadpool | asyncio | normal
 
-    # ONE LINE DATE CONTROL
-    # "date_range": "2026-04-30:2012-11-25",
+    # 🔥 DATE CONTROL (EDIT THIS ONLY)
+    # --------------------------------
+    # "2025"                     → full year
+    # "2025-07"                 → full month
+    # "2025-07-03:2025-07-02"   → exact range (forward/backward both supported)
+    # "latest:3"                → last 3 days
+    # --------------------------------
     "date_range": "2026-04-30:2026-04-01",
-    # examples:
-    # "2025"
-    # "2025-07"
-    # "2025-07-03:2025-07month-02 days"
-    # "latest:3"
 
     "max_db_size_mb": 50,
     "base_db_name": "ittefaq.db",
     "sleep": 0.3,
-    "max_workers": 5
+    "max_workers": 5,
+    "retries": 3
 }
 # ==========================================
 
 BASE_URL = "https://www.ittefaq.com.bd/api/theme_engine/get_ajax_contents"
 
-# 📁 DATA DIRECTORY (IMPORTANT)
+# 📁 DATA DIRECTORY
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-
-# create data folder if not exists
 os.makedirs(DATA_DIR, exist_ok=True)
 
 FAILED_FILE = os.path.join(DATA_DIR, "failed_urls.txt")
@@ -43,7 +42,7 @@ FAILED_FILE = os.path.join(DATA_DIR, "failed_urls.txt")
 
 # ---------- DB ----------
 def get_db_path(index):
-    return os.path.join(DATA_DIR, f"{index}{CONFIG['base_db_name']}")
+    return os.path.join(DATA_DIR, f"{index}_{CONFIG['base_db_name']}")
 
 
 def get_current_db():
@@ -117,7 +116,7 @@ def generate_dates():
             end = datetime(year, month + 1, 1) - timedelta(days=1)
 
     else:
-        raise ValueError("Invalid date_range")
+        raise ValueError("Invalid date_range format")
 
     current = start
     while current <= end:
@@ -161,14 +160,18 @@ def fetch_page(date, start):
         "archive_time": date
     }
 
-    try:
-        r = requests.get(BASE_URL, params=params, timeout=10)
-        data = r.json()
-        return data.get("html", "")
-    except:
-        with open(FAILED_FILE, "a") as f:
-            f.write(f"{date} start={start}\n")
-        return ""
+    for _ in range(CONFIG["retries"]):
+        try:
+            r = requests.get(BASE_URL, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("html", "")
+        except:
+            time.sleep(1)
+
+    with open(FAILED_FILE, "a") as f:
+        f.write(f"{date} start={start}\n")
+    return ""
 
 
 async def fetch_page_async(session, date, start):
@@ -179,26 +182,26 @@ async def fetch_page_async(session, date, start):
         "archive_time": date
     }
 
-    try:
-        async with session.get(BASE_URL, params=params) as r:
-            data = await r.json()
-            return data.get("html", "")
-    except:
-        with open(FAILED_FILE, "a") as f:
-            f.write(f"{date} start={start}\n")
-        return ""
+    for _ in range(CONFIG["retries"]):
+        try:
+            async with session.get(BASE_URL, params=params) as r:
+                data = await r.json()
+                return data.get("html", "")
+        except:
+            await asyncio.sleep(1)
+
+    with open(FAILED_FILE, "a") as f:
+        f.write(f"{date} start={start}\n")
+    return ""
 
 
 # ---------- SAVE ----------
 def save_batch(records, conn):
     c = conn.cursor()
-    for r in records:
-        try:
-            c.execute(
-                "INSERT OR IGNORE INTO news (title, url, published_date) VALUES (?, ?, ?)", r
-            )
-        except:
-            pass
+    c.executemany(
+        "INSERT OR IGNORE INTO news (title, url, published_date) VALUES (?, ?, ?)",
+        records
+    )
     conn.commit()
 
 
@@ -284,7 +287,6 @@ def main():
     for date, records in results:
         save_batch(records, conn)
 
-        # split DB if needed
         size = os.path.getsize(db_path) / (1024 * 1024)
         if size >= CONFIG["max_db_size_mb"]:
             conn.close()
@@ -293,7 +295,6 @@ def main():
             conn = sqlite3.connect(db_path)
             init_db(conn)
 
-        # month progress
         month = datetime.strptime(date, "%Y-%m-%d").strftime("%B %Y")
         if month != last_month:
             print(f"Finished {month}")
