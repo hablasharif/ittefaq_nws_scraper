@@ -1,32 +1,25 @@
 name: Ittefaq Scraper
 
 on:
-  # Run on a schedule — adjust cron as needed
+  # Runs daily at 03:00 UTC
   schedule:
-    - cron: "0 3 * * *"          # every day at 03:00 UTC
+    - cron: "0 3 * * *"
 
-  # Allow manual trigger from the Actions tab
+  # Manual trigger — no inputs, date_range is always read from scraper.py CONFIG
   workflow_dispatch:
-    inputs:
-      date_range:
-        description: >
-          Date range to scrape.
-          Examples: "latest:3"  |  "2026-04"  |  "2026-04-30:2026-04-01"
-        required: false
-        default: "latest:1"
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # needed to commit .db files back to the repo
+      contents: write          # needed to push .db files back to the repo
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0       # full history so we can push back
+          fetch-depth: 0
 
       # ── 2. Python setup ──────────────────────────────────────────────────────
       - name: Set up Python
@@ -38,34 +31,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 3. Override date_range when triggered manually ────────────────────────
-      - name: Patch date_range (manual trigger only)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          DATE_RANGE: ${{ github.event.inputs.date_range }}
-        run: |
-          python - <<'EOF'
-          import re, os
-          path = "scraper.py"
-          src  = open(path).read()
-          new  = re.sub(
-              r'("date_range"\s*:\s*)"[^"]*"',
-              f'\\1"{os.environ["DATE_RANGE"]}"',
-              src,
-          )
-          open(path, "w").write(new)
-          print(f"date_range set to: {os.environ['DATE_RANGE']}")
-          EOF
-
-      # ── 4. Run scraper ────────────────────────────────────────────────────────
+      # ── 3. Run scraper (date_range comes from scraper.py CONFIG) ─────────────
       - name: Run scraper
         run: python scraper.py
 
-      # ── 5. Show DB stats ──────────────────────────────────────────────────────
-      - name: Show DB file sizes & URL counts
+      # ── 4. Show DB stats in the Actions log ──────────────────────────────────
+      - name: Show DB stats
         run: |
           echo "=== DB files in ./data/ ==="
-          ls -lh data/*.db 2>/dev/null || echo "(none yet)"
+          ls -lh data/*.db 2>/dev/null || echo "(none)"
           python - <<'EOF'
           import sqlite3, os, glob
           files = sorted(glob.glob("data/*.db"))
@@ -79,15 +53,15 @@ jobs:
           print(f"\n  {'TOTAL':40s}  {total:>8,} URLs")
           EOF
 
-      # ── 6. Commit & push DB files ─────────────────────────────────────────────
+      # ── 5. Commit & push .db files back to the repo ───────────────────────────
       - name: Commit updated DB files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add data/*.db data/failed_urls.txt 2>/dev/null || true
+          git add data/*.db
+          git add data/failed_urls.txt 2>/dev/null || true
 
-          # Only commit if there is something new
           if git diff --cached --quiet; then
             echo "Nothing changed — skipping commit."
           else
