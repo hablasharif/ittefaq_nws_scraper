@@ -19,7 +19,7 @@ CONFIG = {
     # "2025-07"                  → full month
     # "2025-07-03:2025-07-02"    → exact range (forward/backward both supported)
     # "latest:3"                 → last N days
-    "date_range": "2026-04-30:2026-04-01",
+    "date_range": "2014-04-30:2014-04-01",
 
     "max_db_size_mb": 50,
     "base_db_name": "ittefaq.db",
