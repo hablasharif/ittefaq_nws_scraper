@@ -14,7 +14,8 @@ CONFIG = {
     "mode": "threadpool",  # threadpool | asyncio | normal
 
     # ONE LINE DATE CONTROL
-    "date_range": "2026-04-30:2012-11-25",
+    # "date_range": "2026-04-30:2012-11-25",
+    "date_range": "2026-04-30:2026-04-01",
     # examples:
     # "2025"
     # "2025-07"
