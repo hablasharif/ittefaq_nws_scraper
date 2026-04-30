@@ -14,15 +14,14 @@ CONFIG = {
     # Modes: threadpool | asyncio | normal
     "mode": "threadpool",
 
-    # DATE CONTROL
-    # "2025"                     → full year
-    # "2025-07"                  → full month
-    # "2025-07-03:2025-07-02"    → exact range (forward/backward both supported)
-    # "latest:3"                 → last N days
-    "date_range": "2014-04-30:2014-04-01",
+    # DATE CONTROL (edit only this value)
+    # "2025"                    → full year
+    # "2025-07"                 → full month
+    # "2025-07-03:2025-07-02"   → exact range (forward/backward both work)
+    # "latest:3"                → last N days
+    "date_range": "2026-04-30:2026-04-01",
 
     "max_db_size_mb": 50,
-    "base_db_name": "ittefaq.db",
     "sleep": 0.3,
     "max_workers": 5,
     "retries": 3,
@@ -31,18 +30,23 @@ CONFIG = {
 
 BASE_URL = "https://www.ittefaq.com.bd/api/theme_engine/get_ajax_contents"
 
-# Stored next to this script (committed to repo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR  = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 FAILED_FILE = os.path.join(DATA_DIR, "failed_urls.txt")
+
+# Primary DB — splits become ittefaq_2.db, ittefaq_3.db, ...
+PRIMARY_DB = os.path.join(DATA_DIR, "ittefaq.db")
 
 
 # ─────────────────────────── DB ────────────────────────────
 
 def get_db_path(index: int) -> str:
-    return os.path.join(DATA_DIR, f"{index}_{CONFIG['base_db_name']}")
+    """index=1 → ittefaq.db   index=2 → ittefaq_2.db   ..."""
+    if index == 1:
+        return PRIMARY_DB
+    return os.path.join(DATA_DIR, f"ittefaq_{index}.db")
 
 
 def get_current_db() -> tuple[str, int]:
@@ -78,8 +82,7 @@ def count_urls_in_db(path: str) -> int:
 
 
 def count_all_urls() -> int:
-    total = 0
-    i = 1
+    total, i = 0, 1
     while True:
         path = get_db_path(i)
         if not os.path.exists(path):
@@ -135,7 +138,7 @@ def generate_dates() -> list[str]:
 # ─────────────────────────── PARSE ─────────────────────────
 
 def parse_html(html: str) -> list[tuple[str, str, str]]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup    = BeautifulSoup(html, "html.parser")
     results = []
     for item in soup.select("div.each"):
         a = item.select_one("a.link_overlay")
@@ -262,15 +265,15 @@ def persist_results(results: list) -> None:
 
         save_batch(records, conn)
 
-        # Auto-split when the current DB hits the size limit
+        # Auto-split when current DB hits the size limit
         size_mb = os.path.getsize(db_path) / (1024 * 1024)
         if size_mb >= CONFIG["max_db_size_mb"]:
             conn.close()
-            idx += 1
+            idx    += 1
             db_path = get_db_path(idx)
-            conn = sqlite3.connect(db_path)
+            conn    = sqlite3.connect(db_path)
             init_db(conn)
-            print(f"  ↪ Rolled over to DB #{idx}: {os.path.basename(db_path)}")
+            print(f"  ↪ Rolled over → {os.path.basename(db_path)}")
 
         month = datetime.strptime(date, "%Y-%m-%d").strftime("%B %Y")
         if month != last_month:
@@ -278,6 +281,23 @@ def persist_results(results: list) -> None:
             last_month = month
 
     conn.close()
+
+
+# ─────────────────────────── REPORT ────────────────────────
+
+def print_report() -> None:
+    print("\n📊 URL count report:")
+    i, total = 1, 0
+    while True:
+        path = get_db_path(i)
+        if not os.path.exists(path):
+            break
+        n    = count_urls_in_db(path)
+        size = os.path.getsize(path) / (1024 * 1024)
+        print(f"   {os.path.basename(path):35s}  {n:>8,} URLs  {size:.1f} MB")
+        total += n
+        i += 1
+    print(f"   {'TOTAL':35s}  {total:>8,} URLs")
 
 
 # ─────────────────────────── MAIN ──────────────────────────
@@ -295,22 +315,8 @@ def main() -> None:
         results = run_threadpool(dates)
 
     persist_results(results)
-
-    # ── URL count report ──
-    total = count_all_urls()
-    print(f"\n📊 Total URLs stored across all DB files: {total:,}")
-
-    i = 1
-    while True:
-        path = get_db_path(i)
-        if not os.path.exists(path):
-            break
-        n    = count_urls_in_db(path)
-        size = os.path.getsize(path) / (1024 * 1024)
-        print(f"   {os.path.basename(path):35s}  {n:>8,} URLs  {size:.1f} MB")
-        i += 1
-
-    print("\n✅ Done — DB files are in ./data/")
+    print_report()
+    print("\n✅ Done — DB files saved in ./data/")
 
 
 if __name__ == "__main__":
