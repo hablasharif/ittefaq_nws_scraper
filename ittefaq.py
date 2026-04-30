@@ -14,11 +14,11 @@ CONFIG = {
     "mode": "threadpool",  # threadpool | asyncio | normal
 
     # ONE LINE DATE CONTROL
-    "date_range": "latest:1",
+    "date_range": "2026-04-30:2012-11-25",
     # examples:
     # "2025"
     # "2025-07"
-    # "2025-07-03:2025-07-02"
+    # "2025-07-03:2025-07month-02 days"
     # "latest:3"
 
     "max_db_size_mb": 50,
